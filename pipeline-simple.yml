@@ -1,0 +1,77 @@
+node {
+    stage('Step1-拉取代码'){
+        //pull from gitlab
+        echo "分支拉取代码"
+        git changelog: true,branch: "${params.GIT_BRANCH}",url: "${params.GIT_PROJECT_URL}",credentialsId: "${params.GIT_CREADENTIAL}"
+        script {
+            build_tag = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+            }
+    }
+    stage('Step2-构建包和镜像'){
+        //build with maven,maven repository from aliyun
+        //https://repo.rdc.aliyun.com/repository/105800-release-hJFfeJ | https://repo.rdc.aliyun.com/repository/105800-snapshot-HnV2UL
+        echo "修改构建版本"
+        sh "sed -i 's/dev/test/g' ${WORKSPACE}/${JOB_NAME}/src/main/resources/application.yml"
+        echo "构建common服务"
+        sh "cd ${WORKSPACE}/casterly-common && mvn clean install -D.test.skip=true"
+        echo "构建docker镜像"
+        sh "cd ${WORKSPACE}/${JOB_NAME} && mvn clean install -D.test.skip=true docker:build"
+    }
+    stage('3-推送仓库备份'){
+        //docker tag and docker push
+        sh "docker tag ${JOB_NAME}:latest registry.cn-hangzhou.aliyuncs.com/img-etest/${JOB_NAME}:v3.0-${build_tag}"
+        sh "docker push registry.cn-hangzhou.aliyuncs.com/img-etest/${JOB_NAME}:v3.0-${build_tag}"
+    }
+    stage('Step4-修改镜像版本'){
+        //修改casterly-etc.yml docker-compose配置文件
+        sh "sed -i 's/shortcommit/${build_tag}/g' ${WORKSPACE}/${JOB_NAME}/src/main/docker/casterly-etc.yml"
+    }
+    stage('Step5-推送到服务器'){
+        //deploy new contianer
+        withCredentials([usernamePassword(credentialsId: 'braavos-dev', passwordVariable: 'password', usernameVariable: 'username')]){
+          script{
+            def remote = [:]
+				    remote.name = 'remote jar file on braavos-dev'
+				    remote.host = '47.105.68.50'
+				    remote.user = "$username"
+				    remote.password = "$password"
+				    remote.allowAnyHosts = true
+            stage('Remote SSH'){
+              sshPut remote: remote, from: 'casterly-etc/src/main/docker/casterly-etc.yml', into: '/usr/local/compose'
+            }
+          }
+        }
+    }
+    stage('Step6-部署服务'){
+        //deploy new contianer
+        withCredentials([usernamePassword(credentialsId: 'braavos-dev', passwordVariable: 'password', usernameVariable: 'username')]){
+          script{
+            def remote = [:]
+				    remote.name = 'remote jar file on braavos-dev'
+				    remote.host = '47.105.68.50'
+				    remote.user = "$username"
+				    remote.password = "$password"
+				    remote.allowAnyHosts = true
+            stage('Remote SSH'){
+              sshCommand remote: remote, command: "docker-compose -f /usr/local/compose/casterly-etc.yml up -d"
+            }
+          }
+        }
+    }
+    stage('Step7-删除yml文件'){
+        //deploy new contianer
+        withCredentials([usernamePassword(credentialsId: 'braavos-dev', passwordVariable: 'password', usernameVariable: 'username')]){
+          script{
+            def remote = [:]
+				    remote.name = 'remote jar file on braavos-dev'
+				    remote.host = '47.105.68.50'
+				    remote.user = "$username"
+				    remote.password = "$password"
+				    remote.allowAnyHosts = true
+            stage('Remote SSH'){
+              sshCommand remote: remote, command: "rm -rf /usr/local/compose/casterly-etc.yml"
+            }
+          }
+        }
+    }
+}
